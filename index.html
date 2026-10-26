@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Inventario de casa</title>
   <link rel="manifest" href="manifest.json" />
+  <script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js");
+    });
+  }
+  </script>
   <meta name="theme-color" content="#3F8E99" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <script>
