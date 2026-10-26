@@ -1,0 +1,1551 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inventario de casa</title>
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#3F8E99" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <script>
+    // Si algo falla al arrancar, muestra el error en pantalla en vez de una página en blanco
+    window.addEventListener("error", function (e) {
+      var r = document.getElementById("root");
+      if (r && !r.hasChildNodes()) {
+        r.innerHTML = '<div style="padding:16px;font-family:sans-serif;color:#991b1b;background:#fef2f2;margin:16px;border-radius:8px">' +
+          '<b>No se pudo iniciar la aplicación.</b><br>' + String(e.message || e) +
+          '<br><br>Revisa la consola (F12) o la conexión a internet (se cargan librerías desde CDN).</div>';
+      }
+    });
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/lucide-react@0.263.1/dist/umd/lucide-react.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    html, body { -webkit-tap-highlight-color: transparent; }
+    body { background: #EEF6F6; }
+
+    /* Tema azul verdoso pastel (sobrescribe los rojos de la app) */
+    .bg-\[\#DA291C\] { background-color: #3F8E99 !important; }
+    .hover\:bg-\[\#b82117\]:hover { background-color: #357A84 !important; }
+    .text-\[\#DA291C\] { color: #3F8E99 !important; }
+    .text-\[\#8a1a12\] { color: #245A62 !important; }
+    .accent-\[\#DA291C\] { accent-color: #3F8E99 !important; }
+    .border-\[\#DA291C\] { border-color: #3F8E99 !important; }
+    .hover\:border-\[\#DA291C\]:hover { border-color: #3F8E99 !important; }
+    .ring-\[\#DA291C\] { --tw-ring-color: #3F8E99 !important; }
+    .focus\:ring-red-500:focus { --tw-ring-color: #3F8E99 !important; }
+    .bg-red-50 { background-color: #E3F2F3 !important; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useMemo, useEffect } = React;
+const L = window.LucideReact || {};
+
+// Iconos de Lucide con respaldo de texto si la librería no carga
+const FALLBACK = {
+  Plus: "+", Pencil: "✎", Trash2: "✕", X: "×", Search: "⌕", Download: "↓", Upload: "↑",
+  Home: "⌂", Archive: "▤", Layers: "≡", MapPin: "◉", Database: "▦", Shirt: "👕",
+  ShoppingCart: "🛒", Clock: "◷", Share2: "⇪"
+};
+const ic = (name) => (props) => {
+  if (L[name]) return React.createElement(L[name], props);
+  return React.createElement("span", { className: "inline-block text-center leading-none", style: { width: props.size || 16, height: props.size || 16 } }, FALLBACK[name] || "•");
+};
+const Shirt = ic("Shirt");
+const Home = ic("Home");
+const Archive = ic("Archive");
+const Layers = ic("Layers");
+const Search = ic("Search");
+const Download = ic("Download");
+const Upload = ic("Upload");
+const Plus = ic("Plus");
+const Pencil = ic("Pencil");
+const Trash2 = ic("Trash2");
+const X = ic("X");
+const MapPin = ic("MapPin");
+const Database = ic("Database");
+const ShoppingCart = ic("ShoppingCart");
+const Clock = ic("Clock");
+const Share2 = ic("Share2");
+
+/* ============================================================
+   CONSTANTES Y UTILIDADES
+   ============================================================ */
+const STORAGE_KEY = "inventario-ropa-v1";
+const LAST_BACKUP_KEY = "inventario-ultima-copia";
+
+const DEFAULT_CATEGORIES = [
+  "Camisetas", "Camisas", "Pantalones", "Vaqueros", "Faldas", "Vestidos",
+  "Ropa interior", "Calcetines", "Sudaderas", "Jerséis", "Chaquetas",
+  "Abrigos", "Pijamas", "Trajes", "Deportiva", "Accesorios",
+  "Toallas", "Ropa de cama", "Comida", "Bebidas", "Limpieza", "Higiene", "Menaje",
+  "Otros"
+];
+const COLOR_HEX = {
+  negro: "#111827", blanco: "#ffffff", gris: "#9ca3af", rojo: "#dc2626",
+  azul: "#2563eb", celeste: "#38bdf8", verde: "#16a34a", amarillo: "#facc15",
+  naranja: "#f97316", rosa: "#ec4899", morado: "#9333ea", violeta: "#7c3aed",
+  marron: "#78350f", beige: "#d6c4a0", crema: "#fef3c7", turquesa: "#14b8a6"
+};
+const COLLECTION = { room: "rooms", furniture: "furniture", drawer: "drawers" };
+const PARENT_FIELD = { furniture: "roomId", drawer: "furnitureId" };
+
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const norm = (s) => (s || "").toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const byName = (a, b) => a.localeCompare(b, "es");
+
+// Raíz simple para tolerar género/plural: "roja" ~ "rojo", "camisetas" ~ "camiseta"
+const stem = (t) => {
+  let s = t.replace(/s$/, "");
+  if (s.length > 3) s = s.replace(/[aeo]$/, "");
+  return s;
+};
+
+const colorHex = (c) => {
+  const n = norm(c);
+  const key = Object.keys(COLOR_HEX).find((k) => n.includes(stem(k)));
+  return key ? COLOR_HEX[key] : "#e5e7eb";
+};
+
+// Cantidad válida (entero >= 0). Por defecto 1 si el dato no existe.
+const qtyOf = (v) => {
+  if (v === undefined || v === null || v === "" || isNaN(Number(v))) return 1;
+  return Math.max(0, Math.round(Number(v)));
+};
+
+// Fechas de caducidad (formato YYYY-MM-DD)
+const todayMs = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+};
+const daysUntil = (iso) => {
+  if (!iso) return null;
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return Math.round((new Date(y, m - 1, d).getTime() - todayMs()) / 86400000);
+};
+const fmtDate = (iso) => {
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+};
+const expiryInfo = (iso) => {
+  const n = daysUntil(iso);
+  if (n === null) return null;
+  if (n < 0) return { cls: "bg-red-100 text-red-700 border-red-300", text: `Caducado hace ${-n} d` };
+  if (n === 0) return { cls: "bg-amber-100 text-amber-800 border-amber-300", text: "Caduca hoy" };
+  if (n <= 7) return { cls: "bg-amber-50 text-amber-800 border-amber-200", text: `Caduca en ${n} d` };
+  return { cls: "bg-green-50 text-green-700 border-green-200", text: `Caduca ${fmtDate(iso)}` };
+};
+
+const emptyDB = () => ({
+  rooms: [],
+  furniture: [],
+  drawers: [],
+  garments: [],
+  shopping: [],
+  categories: DEFAULT_CATEGORIES.map((name) => ({ id: uid(), name }))
+});
+
+// Completa los datos cargados: valores por defecto, categorías y nombres antiguos
+function normalizeDB(raw) {
+  const base = { ...emptyDB(), ...(raw || {}) };
+  const garments = (Array.isArray(base.garments) ? base.garments : []).map((g) => ({
+    ...g,
+    quantity: qtyOf(g.quantity),
+    expiry: g.expiry || ""
+  }));
+  const cats = (Array.isArray(base.categories) ? base.categories : [])
+    .filter((c) => c && c.name)
+    .map((c) => ({ id: c.id || uid(), name: String(c.name) }));
+  const names = new Set(cats.map((c) => norm(c.name)));
+  garments.forEach((g) => {
+    const n = (g.category || "").trim();
+    if (n && !names.has(norm(n))) {
+      names.add(norm(n));
+      cats.push({ id: uid(), name: n });
+    }
+  });
+  return {
+    ...base,
+    garments,
+    categories: cats,
+    shopping: Array.isArray(base.shopping) ? base.shopping : []
+  };
+}
+
+function loadDB() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return emptyDB();
+    return normalizeDB(JSON.parse(raw));
+  } catch (e) {
+    return emptyDB();
+  }
+}
+
+const inp = "w-full border border-slate-300 rounded-lg px-3 py-2.5 text-base bg-white focus:outline-none focus:ring-2 focus:ring-red-500";
+const lbl = "block text-sm font-medium text-slate-700 mb-1";
+const btnPrimary = "w-full bg-[#DA291C] hover:bg-[#b82117] text-white font-semibold py-3 rounded-lg shadow disabled:opacity-50";
+const btnSecondary = "w-full bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold py-3 rounded-lg flex items-center justify-center gap-2 disabled:opacity-50";
+const btnSmall = "text-xs font-semibold bg-[#DA291C] text-white px-2.5 py-1.5 rounded-lg flex items-center gap-1 shrink-0";
+
+/* ============================================================
+   COMPONENTES BASE
+   ============================================================ */
+function Modal({ title, onClose, children }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center sm:p-4" onClick={onClose}>
+      <div
+        className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5 max-h-[92vh] overflow-y-auto shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold text-slate-800">{title}</h2>
+          <button type="button" onClick={onClose} className="p-2 rounded-full hover:bg-slate-100">
+            <X size={20} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function IconBtn({ onClick, title, danger, children }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className={`p-1.5 rounded-lg ${danger ? "text-red-600 hover:bg-red-50" : "text-slate-600 hover:bg-slate-100"}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Control −1 / +1
+function QtyControl({ value, onChange }) {
+  return (
+    <div className="inline-flex items-center border border-slate-300 rounded-lg overflow-hidden shrink-0">
+      <button type="button" onClick={() => onChange(-1)} aria-label="Quitar uno"
+        className="px-3 py-1.5 text-slate-700 font-bold hover:bg-slate-100">−</button>
+      <span className={`px-3 py-1.5 text-sm font-semibold min-w-[2.5rem] text-center ${value === 0 ? "text-red-600" : ""}`}>
+        {value}
+      </span>
+      <button type="button" onClick={() => onChange(1)} aria-label="Añadir uno"
+        className="px-3 py-1.5 text-slate-700 font-bold hover:bg-slate-100">+</button>
+    </div>
+  );
+}
+
+// Etiqueta de caducidad con color según urgencia
+function ExpiryChip({ iso }) {
+  const info = expiryInfo(iso);
+  if (!info) return null;
+  return <span className={`text-xs px-2 py-0.5 rounded-full border ${info.cls}`}>{info.text}</span>;
+}
+
+/* ============================================================
+   MODAL: ARTÍCULO
+   ============================================================ */
+function GarmentModal({ garment, db, onSave, onCreateCategory, onClose }) {
+  const initDrawer = garment ? db.drawers.find((d) => d.id === garment.drawerId) : null;
+  const initFurn = initDrawer ? db.furniture.find((f) => f.id === initDrawer.furnitureId) : null;
+
+  const [form, setForm] = useState({
+    name: garment?.name || "",
+    category: garment?.category || db.categories.map((c) => c.name).sort(byName)[0] || "",
+    color: garment?.color || "",
+    quantity: String(garment ? qtyOf(garment.quantity) : 1),
+    expiry: garment?.expiry || "",
+    roomId: initFurn?.roomId || "",
+    furnitureId: initFurn?.id || "",
+    drawerId: garment?.drawerId || ""
+  });
+  const [addingCat, setAddingCat] = useState(false);
+  const [newCat, setNewCat] = useState("");
+
+  const furnList = db.furniture.filter((f) => f.roomId === form.roomId);
+  const drawerList = db.drawers.filter((d) => d.furnitureId === form.furnitureId);
+
+  const catNames = db.categories.map((c) => c.name);
+  const catOptions = [...new Set([...catNames, form.category].filter(Boolean))].sort(byName);
+
+  const onCatChange = (v) => {
+    if (v === "__new__") {
+      setAddingCat(true);
+    } else {
+      setAddingCat(false);
+      setForm({ ...form, category: v });
+    }
+  };
+
+  const confirmNewCat = () => {
+    const saved = onCreateCategory(newCat);
+    if (saved) {
+      setForm({ ...form, category: saved });
+      setNewCat("");
+      setAddingCat(false);
+    }
+  };
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!form.name.trim()) return alert("Escribe el nombre del artículo.");
+    if (!form.category) return alert("Elige o crea una categoría.");
+    if (!form.drawerId) return alert("Selecciona la ubicación exacta (habitación, mueble y cajón).");
+    onSave({
+      id: garment?.id,
+      name: form.name.trim(),
+      category: form.category,
+      color: form.color.trim(),
+      quantity: Math.max(0, parseInt(form.quantity, 10) || 0),
+      expiry: form.expiry || "",
+      drawerId: form.drawerId
+    });
+  };
+
+  return (
+    <Modal title={garment ? "Editar artículo" : "Nuevo artículo"} onClose={onClose}>
+      {db.drawers.length === 0 && (
+        <div className="mb-4 text-sm bg-amber-50 text-amber-800 border border-amber-200 rounded-lg p-3">
+          Primero crea al menos una habitación, mueble y cajón en la pestaña <b>Ubicaciones</b>.
+        </div>
+      )}
+      <form onSubmit={submit} className="space-y-4">
+        <div>
+          <label className={lbl}>Nombre</label>
+          <input className={inp} placeholder="Ej. Camiseta de algodón, Pasta, Detergente" value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })} />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={lbl}>Categoría</label>
+            <select className={inp} value={addingCat ? "__new__" : form.category} onChange={(e) => onCatChange(e.target.value)}>
+              {!form.category && <option value="">— Elige —</option>}
+              {catOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+              <option value="__new__">+ Nueva categoría…</option>
+            </select>
+            {addingCat && (
+              <div className="flex gap-2 mt-2">
+                <input autoFocus className={inp} placeholder="Ej. Limpieza" value={newCat}
+                  onChange={(e) => setNewCat(e.target.value)} />
+                <button type="button" onClick={confirmNewCat}
+                  className="bg-[#DA291C] text-white font-semibold px-3 rounded-lg shrink-0">OK</button>
+              </div>
+            )}
+          </div>
+          <div>
+            <label className={lbl}>Color <span className="font-normal text-slate-400">(opcional)</span></label>
+            <input className={inp} list="colores" placeholder="Ej. Roja" value={form.color}
+              onChange={(e) => setForm({ ...form, color: e.target.value })} />
+            <datalist id="colores">
+              {Object.keys(COLOR_HEX).map((c) => <option key={c} value={cap(c)} />)}
+            </datalist>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={lbl}>Cantidad</label>
+            <input className={inp} type="number" min="0" inputMode="numeric" value={form.quantity}
+              onChange={(e) => setForm({ ...form, quantity: e.target.value })} />
+          </div>
+          <div>
+            <label className={lbl}>Caducidad <span className="font-normal text-slate-400">(opcional)</span></label>
+            <input className={inp} type="date" value={form.expiry}
+              onChange={(e) => setForm({ ...form, expiry: e.target.value })} />
+          </div>
+        </div>
+
+        <div className="border-t pt-4 space-y-3">
+          <p className="text-sm font-semibold text-slate-700">Ubicación exacta</p>
+          <div>
+            <label className={lbl}>Habitación</label>
+            <select className={inp} value={form.roomId}
+              onChange={(e) => setForm({ ...form, roomId: e.target.value, furnitureId: "", drawerId: "" })}>
+              <option value="">— Selecciona —</option>
+              {db.rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={lbl}>Mueble</label>
+            <select className={inp} value={form.furnitureId} disabled={!form.roomId}
+              onChange={(e) => setForm({ ...form, furnitureId: e.target.value, drawerId: "" })}>
+              <option value="">— Selecciona —</option>
+              {furnList.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={lbl}>Cajón / estante</label>
+            <select className={inp} value={form.drawerId} disabled={!form.furnitureId}
+              onChange={(e) => setForm({ ...form, drawerId: e.target.value })}>
+              <option value="">— Selecciona —</option>
+              {drawerList.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <button className={btnPrimary}>Guardar artículo</button>
+      </form>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   MODAL: HABITACIÓN / MUEBLE / CAJÓN
+   ============================================================ */
+function LocationModal({ kind, mode, item, onSave, onClose }) {
+  const [name, setName] = useState(item?.name || "");
+  const titles = {
+    room: { add: "Nueva habitación", edit: "Renombrar habitación", ph: "Ej. Dormitorio principal" },
+    furniture: { add: "Nuevo mueble", edit: "Renombrar mueble", ph: "Ej. Armario blanco" },
+    drawer: { add: "Nuevo cajón / estante", edit: "Renombrar cajón", ph: "Ej. Cajón 2 superior" }
+  };
+  const t = titles[kind];
+  const submit = (e) => {
+    e.preventDefault();
+    if (name.trim()) onSave(name.trim());
+  };
+  return (
+    <Modal title={mode === "edit" ? t.edit : t.add} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <div>
+          <label className={lbl}>Nombre</label>
+          <input autoFocus className={inp} placeholder={t.ph} value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <button className={btnPrimary}>Guardar</button>
+      </form>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   VISTA: BUSCAR
+   ============================================================ */
+function SearchView({ db, pathOf, onAdd, onEdit, onDelete, onAdjust }) {
+  const [q, setQ] = useState("");
+  const [cat, setCat] = useState("");
+
+  const catOptions = useMemo(
+    () => db.categories.map((c) => c.name).sort(byName),
+    [db.categories]
+  );
+
+  const results = useMemo(() => {
+    const tokens = norm(q).split(/\s+/).filter(Boolean).map(stem).filter(Boolean);
+    return db.garments
+      .filter((g) => {
+        if (cat && g.category !== cat) return false;
+        if (!tokens.length) return true;
+        const hay = norm(`${g.name} ${g.category} ${g.color} ${pathOf(g.drawerId)}`);
+        return tokens.every((t) => hay.includes(t));
+      })
+      .map((g) => ({ ...g, path: pathOf(g.drawerId) }))
+      .sort((a, b) => a.path.localeCompare(b.path, "es") || a.name.localeCompare(b.name, "es"));
+  }, [q, cat, db]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-xl font-bold text-slate-800">Buscar artículos</h2>
+        <button onClick={() => onAdd()} className="bg-[#DA291C] text-white text-sm font-semibold px-3 py-2 rounded-lg shadow flex items-center gap-1">
+          <Plus size={16} /> Nuevo
+        </button>
+      </div>
+
+      <div className="relative">
+        <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input
+          className={inp + " pl-10"}
+          placeholder="Ej. camiseta roja, pasta, toallas"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+      </div>
+
+      <select className={inp} value={cat} onChange={(e) => setCat(e.target.value)}>
+        <option value="">Todas las categorías</option>
+        {catOptions.map((c) => <option key={c}>{c}</option>)}
+      </select>
+
+      <p className="text-sm text-slate-500">{results.length} resultado(s)</p>
+
+      {db.garments.length === 0 && (
+        <div className="text-center text-slate-500 bg-white rounded-xl p-8 border">
+          <Shirt size={40} className="mx-auto mb-2 text-slate-300" />
+          <p>Aún no tienes artículos registrados.</p>
+          <p className="text-sm">Pulsa <b>Nuevo</b> para añadir el primero.</p>
+        </div>
+      )}
+
+      <ul className="space-y-3">
+        {results.map((g) => (
+          <li key={g.id} className="bg-white rounded-xl shadow-sm border p-4 space-y-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-semibold text-slate-800 truncate">{g.name}</p>
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  <span className="text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full">{g.category}</span>
+                  {g.color && (
+                    <span className="text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full flex items-center gap-1">
+                      <span className="inline-block w-3 h-3 rounded-full border border-slate-300" style={{ background: colorHex(g.color) }} />
+                      {g.color}
+                    </span>
+                  )}
+                  {g.quantity === 0 && (
+                    <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">Agotado</span>
+                  )}
+                  <ExpiryChip iso={g.expiry} />
+                </div>
+              </div>
+              <div className="flex gap-1 shrink-0">
+                <IconBtn title="Editar" onClick={() => onEdit(g)}><Pencil size={16} /></IconBtn>
+                <IconBtn title="Eliminar" danger onClick={() => onDelete(g.id)}><Trash2 size={16} /></IconBtn>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 min-w-0 flex items-center gap-2 bg-red-50 text-[#8a1a12] rounded-lg px-3 py-2 text-sm font-medium">
+                <MapPin size={16} className="shrink-0" />
+                <span className="truncate">{g.path}</span>
+              </div>
+              <QtyControl value={g.quantity} onChange={(d) => onAdjust(g.id, d)} />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/* ============================================================
+   VISTA: GESTIONAR UBICACIONES (lista editable)
+   ============================================================ */
+function ManageList({ db, onAdd, onEdit, onDelete }) {
+  return (
+    <div className="space-y-4">
+      {db.rooms.length === 0 && (
+        <div className="text-center text-slate-500 bg-white rounded-xl p-8 border">
+          <Home size={40} className="mx-auto mb-2 text-slate-300" />
+          <p>Crea tu primera habitación con el botón <b>Habitación</b> de arriba.</p>
+        </div>
+      )}
+
+      {db.rooms.map((room) => {
+        const furns = db.furniture.filter((f) => f.roomId === room.id);
+        return (
+          <section key={room.id} className="bg-white rounded-xl shadow-sm border overflow-hidden">
+            <header className="flex items-center gap-2 px-4 py-3 bg-slate-50 border-b">
+              <Home size={18} className="text-[#DA291C] shrink-0" />
+              <h3 className="font-bold flex-1 truncate">{room.name}</h3>
+              <button type="button" onClick={() => onAdd("furniture", room.id)} className={btnSmall}>
+                <Plus size={14} /> Mueble
+              </button>
+              <IconBtn title="Renombrar" onClick={() => onEdit("room", room)}><Pencil size={16} /></IconBtn>
+              <IconBtn title="Eliminar" danger onClick={() => onDelete("room", room.id)}><Trash2 size={16} /></IconBtn>
+            </header>
+
+            <div className="p-3 space-y-3">
+              {furns.length === 0 && (
+                <p className="text-sm text-slate-400 px-1">Sin muebles todavía. Pulsa <b>+ Mueble</b> para añadir uno.</p>
+              )}
+              {furns.map((f) => {
+                const drawers = db.drawers.filter((d) => d.furnitureId === f.id);
+                return (
+                  <div key={f.id} className="border rounded-lg p-3">
+                    <div className="flex items-center gap-2">
+                      <Archive size={16} className="text-slate-500 shrink-0" />
+                      <span className="font-semibold flex-1 truncate">{f.name}</span>
+                      <button type="button" onClick={() => onAdd("drawer", f.id)} className={btnSmall}>
+                        <Plus size={14} /> Cajón
+                      </button>
+                      <IconBtn title="Renombrar" onClick={() => onEdit("furniture", f)}><Pencil size={16} /></IconBtn>
+                      <IconBtn title="Eliminar" danger onClick={() => onDelete("furniture", f.id)}><Trash2 size={16} /></IconBtn>
+                    </div>
+                    <ul className="mt-2 space-y-1.5 pl-6">
+                      {drawers.length === 0 && <li className="text-xs text-slate-400">Sin cajones ni estantes</li>}
+                      {drawers.map((d) => {
+                        const n = db.garments.filter((g) => g.drawerId === d.id).length;
+                        return (
+                          <li key={d.id} className="flex items-center gap-2 text-sm bg-slate-50 rounded-md px-2 py-1.5">
+                            <Layers size={14} className="text-slate-500 shrink-0" />
+                            <span className="flex-1 truncate">{d.name}</span>
+                            <span className="text-xs text-slate-500 whitespace-nowrap">{n} artículo(s)</span>
+                            <IconBtn title="Renombrar" onClick={() => onEdit("drawer", d)}><Pencil size={14} /></IconBtn>
+                            <IconBtn title="Eliminar" danger onClick={() => onDelete("drawer", d.id)}><Trash2 size={14} /></IconBtn>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ============================================================
+   VISTA: MAPA DE LA CASA
+   ============================================================ */
+function HouseMap({ db, onOpenFurniture }) {
+  const countByDrawer = useMemo(() => {
+    const m = {};
+    db.garments.forEach((g) => { m[g.drawerId] = (m[g.drawerId] || 0) + 1; });
+    return m;
+  }, [db]);
+
+  const furnCount = (fid) =>
+    db.drawers
+      .filter((d) => d.furnitureId === fid)
+      .reduce((s, d) => s + (countByDrawer[d.id] || 0), 0);
+
+  if (db.rooms.length === 0) {
+    return (
+      <div className="text-center text-slate-500 bg-white rounded-xl p-8 border">
+        <Home size={40} className="mx-auto mb-2 text-slate-300" />
+        <p>Aún no hay habitaciones para dibujar el mapa.</p>
+        <p className="text-sm">Crea habitaciones y muebles en <b>Gestionar</b>.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-500">Toca un mueble para ver el detalle de sus cajones.</p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {db.rooms.map((room) => {
+          const furns = db.furniture.filter((f) => f.roomId === room.id);
+          const total = furns.reduce((s, f) => s + furnCount(f.id), 0);
+          return (
+            <section key={room.id} className="bg-white rounded-xl border shadow-sm overflow-hidden">
+              <div className="bg-[#DA291C] text-white px-3 py-2 flex items-center gap-2">
+                <Home size={16} className="shrink-0" />
+                <span className="font-bold truncate flex-1">{room.name}</span>
+                <span className="text-xs opacity-90 whitespace-nowrap">{total} artículo(s)</span>
+              </div>
+              <div className="p-3 grid grid-cols-2 gap-2">
+                {furns.length === 0 && (
+                  <p className="col-span-2 text-xs text-slate-400">Sin muebles</p>
+                )}
+                {furns.map((f) => {
+                  const nDrawers = db.drawers.filter((d) => d.furnitureId === f.id).length;
+                  return (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => onOpenFurniture(f.id)}
+                      className="text-left rounded-lg border-2 border-slate-200 hover:border-[#DA291C] bg-slate-50 p-2 min-w-0"
+                    >
+                      <div className="flex items-center gap-1 text-sm font-semibold min-w-0">
+                        <Archive size={14} className="shrink-0" />
+                        <span className="truncate">{f.name}</span>
+                      </div>
+                      <div className="text-xs text-slate-500 mt-1">
+                        {nDrawers} cajón(es) · {furnCount(f.id)} artículo(s)
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   VISTA: ARMARIOS (cajoneras con sus cajones y artículos)
+   ============================================================ */
+function WardrobeMap({ db, selFurn, setSelFurn, onAdjust }) {
+  const [selDrawer, setSelDrawer] = useState(null);
+
+  if (db.furniture.length === 0) {
+    return (
+      <div className="text-center text-slate-500 bg-white rounded-xl p-8 border">
+        <Archive size={40} className="mx-auto mb-2 text-slate-300" />
+        <p>Aún no hay muebles para mostrar.</p>
+        <p className="text-sm">Añade muebles y cajones en <b>Gestionar</b>.</p>
+      </div>
+    );
+  }
+
+  const current = db.furniture.find((f) => f.id === selFurn) || null;
+  const drawers = current ? db.drawers.filter((d) => d.furnitureId === current.id) : [];
+  const garmentsIn = (did) => db.garments.filter((g) => g.drawerId === did);
+  const roomName = (f) => db.rooms.find((r) => r.id === f.roomId)?.name || "Sin habitación";
+  const openDrawer = db.drawers.find((d) => d.id === selDrawer && drawers.some((x) => x.id === d.id));
+  const openItems = openDrawer
+    ? garmentsIn(openDrawer.id).slice().sort((a, b) => a.name.localeCompare(b.name, "es"))
+    : [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 overflow-x-auto pb-1 -mx-4 px-4">
+        {db.furniture.map((f) => (
+          <button
+            key={f.id}
+            type="button"
+            onClick={() => { setSelFurn(f.id); setSelDrawer(null); }}
+            className={`shrink-0 text-sm px-3 py-2 rounded-lg border whitespace-nowrap ${
+              selFurn === f.id
+                ? "bg-[#DA291C] text-white border-[#DA291C] font-semibold"
+                : "bg-white text-slate-700 border-slate-300"
+            }`}
+          >
+            {f.name} <span className="opacity-70 text-xs">· {roomName(f)}</span>
+          </button>
+        ))}
+      </div>
+
+      {!current && (
+        <p className="text-sm text-slate-500 text-center py-6">Elige un mueble para ver sus cajones.</p>
+      )}
+
+      {current && (
+        <>
+          <div className="rounded-2xl border-4 border-amber-900/40 bg-amber-50 p-3 space-y-2 shadow-inner">
+            <p className="text-center text-xs font-semibold text-amber-900 uppercase tracking-wide">
+              {current.name}
+            </p>
+
+            {drawers.length === 0 && (
+              <p className="text-center text-sm text-slate-500 py-4">Este mueble no tiene cajones ni estantes.</p>
+            )}
+
+            {drawers.map((d) => {
+              const items = garmentsIn(d.id);
+              const active = selDrawer === d.id;
+              return (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => setSelDrawer(active ? null : d.id)}
+                  className={`w-full rounded-lg border bg-white px-3 py-2.5 flex items-center gap-2 text-left transition ${
+                    active ? "ring-2 ring-[#DA291C] border-[#DA291C]" : "border-amber-900/20 hover:bg-slate-50"
+                  }`}
+                >
+                  <Layers size={14} className="text-slate-500 shrink-0" />
+                  <span className="font-semibold text-sm truncate min-w-0 flex-1">{d.name}</span>
+
+                  <span className="hidden sm:block w-12 h-1.5 rounded-full bg-amber-900/30 shrink-0" />
+
+                  <span className="flex items-center shrink-0 max-w-[40%] overflow-hidden">
+                    {items.slice(0, 6).map((g) => (
+                      <span
+                        key={g.id}
+                        title={`${g.name}${g.color ? " (" + g.color + ")" : ""}`}
+                        className="w-3.5 h-3.5 rounded-full border border-slate-300 -ml-0.5 first:ml-0 shadow-sm shrink-0"
+                        style={{ background: colorHex(g.color) }}
+                      />
+                    ))}
+                    {items.length > 6 && <span className="text-xs text-slate-500 ml-1">+{items.length - 6}</span>}
+                  </span>
+
+                  <span className="text-xs text-slate-500 w-12 text-right shrink-0">{items.length} art.</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <p className="text-xs text-slate-500 text-center">
+            Los puntos representan el color de cada artículo. Toca un cajón para ver su contenido.
+          </p>
+
+          {openDrawer && (
+            <section className="bg-white rounded-xl border shadow-sm overflow-hidden">
+              <header className="px-4 py-3 bg-slate-50 border-b">
+                <p className="font-bold text-slate-800">{openDrawer.name}</p>
+                <p className="text-xs text-slate-500">{roomName(current)} › {current.name}</p>
+              </header>
+              {openItems.length === 0 ? (
+                <p className="p-4 text-sm text-slate-400">Este cajón está vacío.</p>
+              ) : (
+                <ul className="divide-y">
+                  {openItems.map((g) => (
+                    <li key={g.id} className="px-4 py-2.5 flex items-center gap-3">
+                      <span
+                        className="w-4 h-4 rounded-full border border-slate-300 shrink-0"
+                        style={{ background: colorHex(g.color) }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-sm truncate">{g.name}</p>
+                        <p className="text-xs text-slate-500">
+                          {g.category}{g.color ? " · " + g.color : ""}
+                        </p>
+                        <div className="mt-1"><ExpiryChip iso={g.expiry} /></div>
+                      </div>
+                      <QtyControl value={g.quantity} onChange={(d) => onAdjust(g.id, d)} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   VISTA: UBICACIONES (contenedor con los 3 modos)
+   ============================================================ */
+function LocationsView({ db, onAdd, onEdit, onDelete, onAdjust }) {
+  const [mode, setMode] = useState("gestionar");
+  const [selFurn, setSelFurn] = useState(null);
+
+  const openFurniture = (fid) => {
+    setSelFurn(fid);
+    setMode("armarios");
+  };
+
+  const modes = [
+    { id: "gestionar", label: "Gestionar" },
+    { id: "casa", label: "Mapa de la casa" },
+    { id: "armarios", label: "Armarios" }
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-xl font-bold text-slate-800">Ubicaciones</h2>
+        {mode === "gestionar" && (
+          <button onClick={() => onAdd("room")} className="bg-[#DA291C] text-white text-sm font-semibold px-3 py-2 rounded-lg shadow flex items-center gap-1">
+            <Plus size={16} /> Habitación
+          </button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-3 gap-1 bg-slate-200 p-1 rounded-lg">
+        {modes.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={() => setMode(m.id)}
+            className={`py-2 rounded-md text-xs font-semibold ${
+              mode === m.id ? "bg-white text-[#DA291C] shadow" : "text-slate-600"
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {mode === "gestionar" && (
+        <ManageList db={db} onAdd={onAdd} onEdit={onEdit} onDelete={onDelete} />
+      )}
+      {mode === "casa" && <HouseMap db={db} onOpenFurniture={openFurniture} />}
+      {mode === "armarios" && (
+        <WardrobeMap db={db} selFurn={selFurn} setSelFurn={setSelFurn} onAdjust={onAdjust} />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   VISTA: LISTA DE LA COMPRA
+   Agotados (automático) + lista libre que tú editas
+   ============================================================ */
+function ShoppingView({ db, pathOf, onAdjust, onAddManual, onToggleManual, onRemoveManual, onClearDone }) {
+  const [newItem, setNewItem] = useState("");
+  const missing = db.garments
+    .filter((g) => g.quantity === 0)
+    .sort((a, b) => a.name.localeCompare(b.name, "es"));
+  const manual = [...db.shopping].sort((a, b) => Number(a.done) - Number(b.done));
+  const doneCount = db.shopping.filter((s) => s.done).length;
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-xl font-bold text-slate-800">Lista de la compra</h2>
+
+      {/* Agotados automáticos */}
+      <section className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <header className="px-4 py-3 bg-slate-50 border-b">
+          <p className="font-bold text-slate-800">Agotados</p>
+          <p className="text-xs text-slate-500">Artículos con cantidad 0. Se añaden solos al bajar a 0.</p>
+        </header>
+        {missing.length === 0 ? (
+          <p className="p-4 text-sm text-slate-400">No hay nada agotado.</p>
+        ) : (
+          <ul className="divide-y">
+            {missing.map((g) => (
+              <li key={g.id} className="px-4 py-2.5 flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-sm truncate">{g.name}</p>
+                  <p className="text-xs text-slate-500 truncate">{g.category} · {pathOf(g.drawerId)}</p>
+                </div>
+                <button type="button" onClick={() => onAdjust(g.id, 1)} className={btnSmall}>
+                  Reponer
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Lista libre */}
+      <section className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <header className="px-4 py-3 bg-slate-50 border-b">
+          <p className="font-bold text-slate-800">Para comprar</p>
+          <p className="text-xs text-slate-500">Añade lo que quieras, aunque aún no lo tengas registrado.</p>
+        </header>
+
+        <form
+          className="flex gap-2 p-3 border-b"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (newItem.trim()) {
+              onAddManual(newItem);
+              setNewItem("");
+            }
+          }}
+        >
+          <input className={inp} placeholder="Ej. Leche, papel de cocina" value={newItem}
+            onChange={(e) => setNewItem(e.target.value)} />
+          <button className="bg-[#DA291C] text-white font-semibold px-4 rounded-lg shrink-0">Añadir</button>
+        </form>
+
+        {manual.length === 0 ? (
+          <p className="p-4 text-sm text-slate-400">La lista está vacía.</p>
+        ) : (
+          <ul className="divide-y">
+            {manual.map((s) => (
+              <li key={s.id} className="px-4 py-2.5 flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={!!s.done}
+                  onChange={() => onToggleManual(s.id)}
+                  className="w-5 h-5 accent-[#DA291C] shrink-0"
+                />
+                <span className={`flex-1 min-w-0 truncate text-sm ${s.done ? "line-through text-slate-400" : ""}`}>
+                  {s.name}
+                </span>
+                <IconBtn title="Quitar" danger onClick={() => onRemoveManual(s.id)}><Trash2 size={14} /></IconBtn>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {doneCount > 0 && (
+          <div className="p-3 border-t">
+            <button type="button" onClick={onClearDone}
+              className="w-full text-sm text-slate-600 border border-slate-300 hover:bg-slate-50 font-semibold py-2 rounded-lg">
+              Quitar los {doneCount} comprados
+            </button>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/* ============================================================
+   VISTA: CADUCIDAD
+   ============================================================ */
+function ExpiryView({ db, pathOf, onAdjust, onEdit }) {
+  const items = db.garments
+    .filter((g) => g.expiry && daysUntil(g.expiry) !== null)
+    .map((g) => ({ ...g, days: daysUntil(g.expiry) }))
+    .sort((a, b) => a.days - b.days);
+
+  const expired = items.filter((i) => i.days < 0);
+  const soon = items.filter((i) => i.days >= 0 && i.days <= 7);
+  const later = items.filter((i) => i.days > 7);
+
+  const Section = ({ title, tone, list }) => {
+    if (list.length === 0) return null;
+    return (
+      <section className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <header className={`px-4 py-2.5 border-b font-bold text-sm ${tone}`}>
+          {title} ({list.length})
+        </header>
+        <ul className="divide-y">
+          {list.map((g) => (
+            <li key={g.id} className="px-4 py-3 space-y-2">
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold text-sm truncate">{g.name}</p>
+                  <p className="text-xs text-slate-500 truncate">{pathOf(g.drawerId)}</p>
+                </div>
+                <IconBtn title="Editar" onClick={() => onEdit(g)}><Pencil size={14} /></IconBtn>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <ExpiryChip iso={g.expiry} />
+                <QtyControl value={g.quantity} onChange={(d) => onAdjust(g.id, d)} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+    );
+  };
+
+  if (items.length === 0) {
+    return (
+      <div className="space-y-4">
+        <h2 className="text-xl font-bold text-slate-800">Caducidad</h2>
+        <div className="text-center text-slate-500 bg-white rounded-xl p-8 border">
+          <Clock size={40} className="mx-auto mb-2 text-slate-300" />
+          <p>No hay artículos con fecha de caducidad.</p>
+          <p className="text-sm">Añádela al editar un artículo (campo <b>Caducidad</b>).</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-xl font-bold text-slate-800">Caducidad</h2>
+      <Section title="Caducados" tone="bg-red-100 text-red-800" list={expired} />
+      <Section title="Caducan en los próximos 7 días" tone="bg-amber-100 text-amber-900" list={soon} />
+      <Section title="Vigentes" tone="bg-green-50 text-green-800" list={later} />
+    </div>
+  );
+}
+
+/* ============================================================
+   COMPONENTE: GESTIÓN DE CATEGORÍAS
+   ============================================================ */
+function CategoriesManager({ db, onCreate, onRename, onDelete }) {
+  const [newName, setNewName] = useState("");
+  const [editId, setEditId] = useState(null);
+  const [editName, setEditName] = useState("");
+
+  const sorted = [...db.categories].sort((a, b) => byName(a.name, b.name));
+  const countOf = (name) => db.garments.filter((g) => g.category === name).length;
+
+  return (
+    <div className="bg-white rounded-xl border shadow-sm p-4 space-y-3">
+      <div>
+        <h3 className="font-bold text-slate-800">Categorías</h3>
+        <p className="text-xs text-slate-500">
+          Añade las que necesites (comida, bebidas, limpieza…). También puedes crearlas al añadir un artículo.
+        </p>
+      </div>
+
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (onCreate(newName)) setNewName("");
+        }}
+      >
+        <input className={inp} placeholder="Ej. Lácteos" value={newName} onChange={(e) => setNewName(e.target.value)} />
+        <button className="bg-[#DA291C] text-white font-semibold px-4 rounded-lg shrink-0">Añadir</button>
+      </form>
+
+      <ul className="divide-y">
+        {sorted.map((c) =>
+          editId === c.id ? (
+            <li key={c.id} className="py-2 flex gap-2">
+              <input autoFocus className={inp} value={editName} onChange={(e) => setEditName(e.target.value)} />
+              <button
+                type="button"
+                onClick={() => { if (onRename(c, editName)) setEditId(null); }}
+                className="bg-[#DA291C] text-white font-semibold px-3 rounded-lg shrink-0"
+              >OK</button>
+              <button
+                type="button"
+                onClick={() => setEditId(null)}
+                className="border border-slate-300 text-slate-600 px-3 rounded-lg shrink-0"
+              >X</button>
+            </li>
+          ) : (
+            <li key={c.id} className="py-2 flex items-center gap-2">
+              <span className="flex-1 truncate text-sm">{c.name}</span>
+              <span className="text-xs text-slate-500 whitespace-nowrap">{countOf(c.name)} art.</span>
+              <IconBtn title="Renombrar" onClick={() => { setEditId(c.id); setEditName(c.name); }}>
+                <Pencil size={14} />
+              </IconBtn>
+              <IconBtn title="Eliminar" danger onClick={() => onDelete(c)}>
+                <Trash2 size={14} />
+              </IconBtn>
+            </li>
+          )
+        )}
+      </ul>
+    </div>
+  );
+}
+
+/* ============================================================
+   VISTA: DATOS (CATEGORÍAS, COPIAS, EXPORTAR / IMPORTAR)
+   ============================================================ */
+function DataView({
+  db, persisted, lastBackup,
+  onShare, onExport, onImportFile, onClear,
+  onCreateCategory, onRenameCategory, onDeleteCategory
+}) {
+  const daysSinceBackup = lastBackup
+    ? Math.floor((Date.now() - new Date(lastBackup).getTime()) / 86400000)
+    : null;
+  const needsBackup = daysSinceBackup === null || daysSinceBackup > 7;
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-xl font-bold text-slate-800">Datos y categorías</h2>
+
+      <div className="bg-white rounded-xl border shadow-sm p-4 grid grid-cols-3 text-center">
+        <div><p className="text-2xl font-bold text-[#DA291C]">{db.rooms.length}</p><p className="text-xs text-slate-500">Habitaciones</p></div>
+        <div><p className="text-2xl font-bold text-[#DA291C]">{db.furniture.length}</p><p className="text-xs text-slate-500">Muebles</p></div>
+        <div><p className="text-2xl font-bold text-[#DA291C]">{db.garments.length}</p><p className="text-xs text-slate-500">Artículos</p></div>
+      </div>
+
+      {/* Estado de almacenamiento y copias */}
+      <div className="bg-white rounded-xl border shadow-sm p-4 space-y-2 text-sm">
+        <p>
+          <b>Almacenamiento persistente:</b>{" "}
+          {persisted === null && "comprobando…"}
+          {persisted === true && "activado. Chrome no debería borrar tus datos automáticamente."}
+          {persisted === false && "no concedido. Chrome puede borrar los datos si le falta espacio. Haz copias."}
+        </p>
+        <p className={needsBackup ? "text-amber-800" : "text-slate-600"}>
+          {lastBackup
+            ? `Última copia: ${new Date(lastBackup).toLocaleString("es")}`
+            : "Todavía no has hecho ninguna copia."}
+          {needsBackup && " Te recomendamos hacer una copia."}
+        </p>
+      </div>
+
+      <CategoriesManager
+        db={db}
+        onCreate={onCreateCategory}
+        onRename={onRenameCategory}
+        onDelete={onDeleteCategory}
+      />
+
+      <div className="bg-white rounded-xl border shadow-sm p-4 space-y-3">
+        <h3 className="font-bold text-slate-800">Copias de seguridad</h3>
+        <p className="text-sm text-slate-600">
+          En el móvil, <b>Compartir copia</b> abre el menú de Android para guardarla en Drive, enviarla por correo o donde quieras.
+          En el ordenador, descarga el archivo.
+        </p>
+
+        <button onClick={onShare} className={btnPrimary + " flex items-center justify-center gap-2"}>
+          <Share2 size={18} /> Compartir copia
+        </button>
+        <button onClick={onExport} className={btnSecondary}>
+          <Download size={18} /> Descargar archivo JSON
+        </button>
+        <label className={btnSecondary + " cursor-pointer"}>
+          <Upload size={18} /> Importar JSON
+          <input type="file" accept="application/json,.json" className="hidden" onChange={onImportFile} />
+        </label>
+        <p className="text-xs text-slate-500">
+          Para restaurar, pulsa <b>Importar JSON</b> y elige el archivo (por ejemplo, desde Drive). Importar <b>reemplaza</b> los datos actuales.
+        </p>
+      </div>
+
+      <div className="bg-white rounded-xl border shadow-sm p-4">
+        <button onClick={onClear} className="w-full text-red-600 border border-red-200 hover:bg-red-50 font-semibold py-2.5 rounded-lg">
+          Borrar todos los datos
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   APP PRINCIPAL
+   ============================================================ */
+const TABS = [
+  { id: "buscar", label: "Buscar", icon: Search },
+  { id: "ubicaciones", label: "Ubicaciones", icon: Home },
+  { id: "compra", label: "Compra", icon: ShoppingCart },
+  { id: "caducidad", label: "Caducidad", icon: Clock },
+  { id: "datos", label: "Datos", icon: Database }
+];
+
+function App() {
+  const [db, setDB] = useState(loadDB);
+  const [tab, setTab] = useState("buscar");
+  const [garmentModal, setGarmentModal] = useState(null);
+  const [locModal, setLocModal] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [persisted, setPersisted] = useState(null);
+  const [lastBackup, setLastBackup] = useState(() => localStorage.getItem(LAST_BACKUP_KEY));
+
+  // Persistencia automática en localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+    } catch (e) {
+      alert("No se pudo guardar en el navegador: " + e.message);
+    }
+  }, [db]);
+
+  // Pedir almacenamiento persistente (Chrome decide si lo concede)
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!navigator.storage || !navigator.storage.persist) return setPersisted(false);
+        const already = await navigator.storage.persisted();
+        setPersisted(already || (await navigator.storage.persist()));
+      } catch (e) {
+        setPersisted(false);
+      }
+    })();
+  }, []);
+
+  const notify = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2200);
+  };
+
+  const markBackup = () => {
+    const t = new Date().toISOString();
+    localStorage.setItem(LAST_BACKUP_KEY, t);
+    setLastBackup(t);
+  };
+
+  // Ruta legible: Habitación › Mueble › Cajón
+  const pathOf = (drawerId) => {
+    const d = db.drawers.find((x) => x.id === drawerId);
+    if (!d) return "Sin ubicación";
+    const f = db.furniture.find((x) => x.id === d.furnitureId);
+    const r = f && db.rooms.find((x) => x.id === f.roomId);
+    return [r?.name, f?.name, d.name].filter(Boolean).join(" › ");
+  };
+
+  /* ---------- Categorías ---------- */
+  const createCategory = (raw) => {
+    const n = (raw || "").trim();
+    if (!n) return null;
+    const existing = db.categories.find((c) => norm(c.name) === norm(n));
+    if (existing) return existing.name;
+    setDB((d) => ({ ...d, categories: [...d.categories, { id: uid(), name: n }] }));
+    notify("Categoría creada");
+    return n;
+  };
+
+  const renameCategory = (cat, raw) => {
+    const n = (raw || "").trim();
+    if (!n) return false;
+    if (db.categories.some((c) => c.id !== cat.id && norm(c.name) === norm(n))) {
+      alert("Ya existe una categoría con ese nombre.");
+      return false;
+    }
+    setDB((d) => ({
+      ...d,
+      categories: d.categories.map((c) => (c.id === cat.id ? { ...c, name: n } : c)),
+      garments: d.garments.map((g) => (g.category === cat.name ? { ...g, category: n } : g))
+    }));
+    notify("Categoría renombrada");
+    return true;
+  };
+
+  const deleteCategory = (cat) => {
+    const n = db.garments.filter((g) => g.category === cat.name).length;
+    const extra = n ? ` Sus ${n} artículo(s) pasarán a "Otros".` : "";
+    if (!confirm(`¿Eliminar la categoría "${cat.name}"?${extra}`)) return;
+    setDB((d) => {
+      let cats = d.categories.filter((c) => c.id !== cat.id);
+      if (!cats.some((c) => norm(c.name) === "otros")) cats = [...cats, { id: uid(), name: "Otros" }];
+      return {
+        ...d,
+        categories: cats,
+        garments: d.garments.map((g) => (g.category === cat.name ? { ...g, category: "Otros" } : g))
+      };
+    });
+    notify("Categoría eliminada");
+  };
+
+  /* ---------- Artículos ---------- */
+  const saveGarment = (g) => {
+    if (g.id) {
+      setDB((d) => ({ ...d, garments: d.garments.map((x) => (x.id === g.id ? { ...x, ...g } : x)) }));
+    } else {
+      setDB((d) => ({ ...d, garments: [...d.garments, { ...g, id: uid() }] }));
+    }
+    setGarmentModal(null);
+    notify("Artículo guardado");
+  };
+
+  const deleteGarment = (id) => {
+    if (!confirm("¿Eliminar este artículo?")) return;
+    setDB((d) => ({ ...d, garments: d.garments.filter((g) => g.id !== id) }));
+    notify("Artículo eliminado");
+  };
+
+  const adjustQty = (id, delta) => {
+    setDB((d) => ({
+      ...d,
+      garments: d.garments.map((g) =>
+        g.id === id ? { ...g, quantity: Math.max(0, qtyOf(g.quantity) + delta) } : g
+      )
+    }));
+  };
+
+  /* ---------- Lista de la compra ---------- */
+  const addManualShopping = (raw) => {
+    const n = (raw || "").trim();
+    if (!n) return;
+    setDB((d) => ({ ...d, shopping: [...d.shopping, { id: uid(), name: n, done: false }] }));
+  };
+  const toggleManualShopping = (id) => {
+    setDB((d) => ({
+      ...d,
+      shopping: d.shopping.map((s) => (s.id === id ? { ...s, done: !s.done } : s))
+    }));
+  };
+  const removeManualShopping = (id) => {
+    setDB((d) => ({ ...d, shopping: d.shopping.filter((s) => s.id !== id) }));
+  };
+  const clearDoneShopping = () => {
+    setDB((d) => ({ ...d, shopping: d.shopping.filter((s) => !s.done) }));
+    notify("Comprados quitados");
+  };
+
+  /* ---------- Ubicaciones ---------- */
+  const saveLocation = (name) => {
+    const { kind, mode, parentId, item } = locModal;
+    const key = COLLECTION[kind];
+    if (mode === "edit") {
+      setDB((d) => ({ ...d, [key]: d[key].map((x) => (x.id === item.id ? { ...x, name } : x)) }));
+    } else {
+      const obj = { id: uid(), name };
+      if (PARENT_FIELD[kind]) obj[PARENT_FIELD[kind]] = parentId;
+      setDB((d) => ({ ...d, [key]: [...d[key], obj] }));
+    }
+    setLocModal(null);
+    notify("Guardado");
+  };
+
+  const deleteLocation = (kind, id) => {
+    let furnIds = [];
+    let drawerIds = [];
+    if (kind === "room") {
+      furnIds = db.furniture.filter((f) => f.roomId === id).map((f) => f.id);
+      drawerIds = db.drawers.filter((d) => furnIds.includes(d.furnitureId)).map((d) => d.id);
+    } else if (kind === "furniture") {
+      furnIds = [id];
+      drawerIds = db.drawers.filter((d) => d.furnitureId === id).map((d) => d.id);
+    } else {
+      drawerIds = [id];
+    }
+    const nGarments = db.garments.filter((g) => drawerIds.includes(g.drawerId)).length;
+    const label = { room: "la habitación", furniture: "el mueble", drawer: "el cajón" }[kind];
+    const extra = nGarments ? ` Se borrarán también ${nGarments} artículo(s) guardados dentro.` : "";
+    if (!confirm(`¿Eliminar ${label}?${extra}`)) return;
+
+    setDB((d) => ({
+      ...d,
+      rooms: kind === "room" ? d.rooms.filter((r) => r.id !== id) : d.rooms,
+      furniture: d.furniture.filter((f) => !furnIds.includes(f.id)),
+      drawers: d.drawers.filter((x) => !drawerIds.includes(x.id)),
+      garments: d.garments.filter((g) => !drawerIds.includes(g.drawerId))
+    }));
+    notify("Eliminado");
+  };
+
+  /* ---------- Copias: compartir / exportar / importar ---------- */
+  const buildPayload = () => ({
+    app: "inventario-ropa",
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    data: db
+  });
+
+  const backupFileName = () => `inventario-casa-${new Date().toISOString().slice(0, 10)}.json`;
+
+  // Abre el menú de compartir de Android (Drive, WhatsApp, Gmail...).
+  // Si el navegador no soporta compartir archivos, descarga el archivo.
+  const shareBackup = async () => {
+    const file = new File([JSON.stringify(buildPayload(), null, 2)], backupFileName(), { type: "application/json" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: "Copia de inventario de casa" });
+        markBackup();
+        notify("Copia compartida");
+      } catch (e) {
+        if (e.name !== "AbortError") alert("No se pudo compartir: " + e.message);
+      }
+    } else {
+      exportDB();
+    }
+  };
+
+  const exportDB = () => {
+    const blob = new Blob([JSON.stringify(buildPayload(), null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = backupFileName();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    markBackup();
+    notify("Copia descargada");
+  };
+
+  // Reemplaza los datos tras confirmar
+  const importText = (text) => {
+    try {
+      const parsed = JSON.parse(text);
+      const src = parsed.data && !Array.isArray(parsed.data) ? parsed.data : parsed;
+      const valid = ["rooms", "furniture", "drawers", "garments"].every((k) => Array.isArray(src[k]));
+      if (!valid) throw new Error("El archivo no tiene el formato esperado.");
+      if (!confirm("Esto reemplazará todos los datos actuales. ¿Continuar?")) return;
+      setDB(normalizeDB({
+        rooms: src.rooms,
+        furniture: src.furniture,
+        drawers: src.drawers,
+        garments: src.garments,
+        categories: src.categories,
+        shopping: src.shopping
+      }));
+      notify("Importación completada");
+    } catch (err) {
+      alert("No se pudo importar: " + err.message);
+    }
+  };
+
+  const importFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => importText(reader.result);
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const clearAll = () => {
+    if (!confirm("¿Borrar TODOS los datos? Esta acción no se puede deshacer.")) return;
+    setDB(emptyDB());
+    notify("Datos borrados");
+  };
+
+  return (
+    <div className="min-h-screen pb-24">
+      <header className="sticky top-0 z-40 bg-[#DA291C] text-white shadow">
+        <div className="max-w-xl mx-auto px-4 py-3 flex items-center gap-2">
+          <Shirt size={22} />
+          <h1 className="font-bold text-lg">Inventario de casa</h1>
+          <span className="ml-auto text-xs opacity-80">{db.garments.length} artículos</span>
+        </div>
+      </header>
+
+      <main className="max-w-xl mx-auto px-4 pt-4">
+        {tab === "buscar" && (
+          <SearchView
+            db={db}
+            pathOf={pathOf}
+            onAdd={() => setGarmentModal({})}
+            onEdit={(g) => setGarmentModal({ garment: g })}
+            onDelete={deleteGarment}
+            onAdjust={adjustQty}
+          />
+        )}
+        {tab === "ubicaciones" && (
+          <LocationsView
+            db={db}
+            onAdd={(kind, parentId) => setLocModal({ kind, mode: "add", parentId })}
+            onEdit={(kind, item) => setLocModal({ kind, mode: "edit", item })}
+            onDelete={deleteLocation}
+            onAdjust={adjustQty}
+          />
+        )}
+        {tab === "compra" && (
+          <ShoppingView
+            db={db}
+            pathOf={pathOf}
+            onAdjust={adjustQty}
+            onAddManual={addManualShopping}
+            onToggleManual={toggleManualShopping}
+            onRemoveManual={removeManualShopping}
+            onClearDone={clearDoneShopping}
+          />
+        )}
+        {tab === "caducidad" && (
+          <ExpiryView
+            db={db}
+            pathOf={pathOf}
+            onAdjust={adjustQty}
+            onEdit={(g) => setGarmentModal({ garment: g })}
+          />
+        )}
+        {tab === "datos" && (
+          <DataView
+            db={db}
+            persisted={persisted}
+            lastBackup={lastBackup}
+            onShare={shareBackup}
+            onExport={exportDB}
+            onImportFile={importFile}
+            onClear={clearAll}
+            onCreateCategory={createCategory}
+            onRenameCategory={renameCategory}
+            onDeleteCategory={deleteCategory}
+          />
+        )}
+      </main>
+
+      <nav className="fixed bottom-0 inset-x-0 bg-white border-t z-40">
+        <div className="max-w-xl mx-auto grid grid-cols-5">
+          {TABS.map((t) => {
+            const Icon = t.icon;
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`py-2.5 flex flex-col items-center gap-0.5 ${active ? "text-[#DA291C]" : "text-slate-500"}`}
+              >
+                <Icon size={20} />
+                <span className="text-[11px] font-medium">{t.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      {garmentModal && (
+        <GarmentModal
+          garment={garmentModal.garment}
+          db={db}
+          onSave={saveGarment}
+          onCreateCategory={createCategory}
+          onClose={() => setGarmentModal(null)}
+        />
+      )}
+
+      {locModal && (
+        <LocationModal
+          kind={locModal.kind}
+          mode={locModal.mode}
+          item={locModal.item}
+          onSave={saveLocation}
+          onClose={() => setLocModal(null)}
+        />
+      )}
+
+      {toast && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow-lg z-50">
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
